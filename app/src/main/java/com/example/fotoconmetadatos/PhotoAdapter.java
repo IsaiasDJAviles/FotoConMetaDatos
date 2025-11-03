@@ -1,7 +1,9 @@
 package com.example.fotoconmetadatos;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -11,6 +13,7 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
+import java.io.InputStream;
 import java.util.List;
 
 public class PhotoAdapter extends RecyclerView.Adapter<PhotoAdapter.PhotoViewHolder> {
@@ -33,10 +36,12 @@ public class PhotoAdapter extends RecyclerView.Adapter<PhotoAdapter.PhotoViewHol
     public void onBindViewHolder(@NonNull PhotoViewHolder holder, int position) {
         PhotoItem photo = photoList.get(position);
 
-        // Cargar imagen con thumbnail
-        Bitmap bitmap = loadThumbnail(photo.getPath());
+        // Cargar imagen desde Uri
+        Bitmap bitmap = loadThumbnail(holder.itemView.getContext(), photo.getUri());
         if (bitmap != null) {
             holder.imageView.setImageBitmap(bitmap);
+        } else {
+            holder.imageView.setImageResource(android.R.drawable.ic_menu_report_image); // Imagen por defecto
         }
 
         // Mostrar información
@@ -55,15 +60,17 @@ public class PhotoAdapter extends RecyclerView.Adapter<PhotoAdapter.PhotoViewHol
         return photoList.size();
     }
 
-    private Bitmap loadThumbnail(String path) {
-        try {
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = 4; // Reducir tamaño para eficiencia
-            return BitmapFactory.decodeFile(path, options);
+    private Bitmap loadThumbnail(Context context, Uri uri) {
+        try (InputStream inputStream = context.getContentResolver().openInputStream(uri)) {
+            if (inputStream != null) {
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = 4; // Reducir tamaño para eficiencia
+                return BitmapFactory.decodeStream(inputStream, null, options);
+            }
         } catch (Exception e) {
             e.printStackTrace();
-            return null;
         }
+        return null;
     }
 
     public void updateData(List<PhotoItem> newPhotoList) {

@@ -1,15 +1,17 @@
 package com.example.fotoconmetadatos;
 
-public class PhotoItem {
-    private String path;
-    private String name;
-    private String dateTime;
-    private String location;
-    private long id;
+import android.net.Uri;
 
-    public PhotoItem(long id, String path, String name, String dateTime, String location) {
+public class PhotoItem {
+    private final long id;
+    private final Uri uri;
+    private final String name;
+    private final String dateTime;
+    private final String location;
+
+    public PhotoItem(long id, String uriString, String name, String dateTime, String location) {
         this.id = id;
-        this.path = path;
+        this.uri = Uri.parse(uriString);
         this.name = name;
         this.dateTime = dateTime;
         this.location = location;
@@ -19,8 +21,8 @@ public class PhotoItem {
         return id;
     }
 
-    public String getPath() {
-        return path;
+    public Uri getUri() {
+        return uri;
     }
 
     public String getName() {

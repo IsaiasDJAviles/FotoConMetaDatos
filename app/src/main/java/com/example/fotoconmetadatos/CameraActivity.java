@@ -13,22 +13,28 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.content.FileProvider;
 import androidx.exifinterface.media.ExifInterface;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationServices;
 
-import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.io.InputStream;
+import java.io.OutputStream;
+
+import java.io.File;               // Para crear archivos locales
+import java.io.FileInputStream;    // Para leer archivos locales
+import java.io.FileOutputStream;
 
 public class CameraActivity extends AppCompatActivity {
 
@@ -37,8 +43,10 @@ public class CameraActivity extends AppCompatActivity {
 
     private FusedLocationProviderClient fusedLocationClient;
     private Location currentLocation;
-    private File photoFile;
     private TextView tvStatus;
+
+    private ActivityResultLauncher<Intent> cameraLauncher;
+    private Uri currentPhotoUri;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -50,9 +58,21 @@ public class CameraActivity extends AppCompatActivity {
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
 
+        // Lanzador moderno para la cámara
+        cameraLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK && currentPhotoUri != null) {
+                        addExifData(currentPhotoUri);
+                        addPhotoToGallery(currentPhotoUri);
+                        Toast.makeText(this, "Foto guardada con éxito", Toast.LENGTH_SHORT).show();
+                        finish();
+                    }
+                });
+
         btnCapture.setOnClickListener(v -> checkPermissionsAndTakePhoto());
 
-        // Solicitar ubicación al inicio
+        // Solicitar ubicación
         requestLocationUpdate();
     }
 
@@ -84,132 +104,85 @@ public class CameraActivity extends AppCompatActivity {
                     .addOnSuccessListener(this, location -> {
                         if (location != null) {
                             currentLocation = location;
-                            tvStatus.setText("GPS listo. Lat: " + String.format("%.4f", location.getLatitude()) +
-                                    ", Lon: " + String.format("%.4f", location.getLongitude()));
+                            tvStatus.setText("GPS listo. Lat: " +
+                                    String.format("%.4f", location.getLatitude()) +
+                                    ", Lon: " +
+                                    String.format("%.4f", location.getLongitude()));
                         } else {
                             tvStatus.setText("Ubicación no disponible. La foto se guardará sin GPS.");
                         }
                     })
-                    .addOnFailureListener(e -> {
-                        tvStatus.setText("Error al obtener ubicación");
-                    });
+                    .addOnFailureListener(e -> tvStatus.setText("Error al obtener ubicación"));
         }
     }
 
     private void takePhoto() {
-        Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, "IMG_" + System.currentTimeMillis() + ".jpg");
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FotoConMetaDatos");
 
-        if (takePictureIntent.resolveActivity(getPackageManager()) != null) {
-            photoFile = createImageFile();
+        currentPhotoUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
 
-            if (photoFile != null) {
-                Uri photoURI = FileProvider.getUriForFile(this,
-                        getApplicationContext().getPackageName() + ".fileprovider",
-                        photoFile);
-
-                takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
-                startActivityForResult(takePictureIntent, REQUEST_CAMERA);
-            }
+        if (currentPhotoUri != null) {
+            Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, currentPhotoUri);
+            cameraLauncher.launch(takePictureIntent);
         } else {
-            Toast.makeText(this, "No hay aplicación de cámara disponible", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "No se pudo crear archivo en la galería", Toast.LENGTH_SHORT).show();
         }
     }
 
-    private File createImageFile() {
-        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-        String imageFileName = "JPEG_" + timeStamp + "_";
-
-        File storageDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-
-        if (!storageDir.exists()) {
-            storageDir.mkdirs();
-        }
-
+    private void addExifData(Uri photoUri) {
         try {
-            return File.createTempFile(imageFileName, ".jpg", storageDir);
-        } catch (IOException e) {
-            e.printStackTrace();
-            Toast.makeText(this, "Error al crear archivo: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-            return null;
-        }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-
-        if (requestCode == REQUEST_CAMERA && resultCode == RESULT_OK) {
-            if (photoFile != null && photoFile.exists()) {
-                // Agregar metadatos EXIF
-                addExifData(photoFile);
-
-                // Agregar la foto al MediaStore
-                addPhotoToGallery(photoFile);
-
-                Toast.makeText(this, "Foto guardada con éxito", Toast.LENGTH_SHORT).show();
-
-                // Volver a MainActivity
-                finish();
+            // Copiar el contenido del Uri a un archivo temporal
+            File tempFile = new File(getCacheDir(), "temp.jpg");
+            try (InputStream in = getContentResolver().openInputStream(photoUri);
+                 OutputStream out = new java.io.FileOutputStream(tempFile)) {
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, bytesRead);
+                }
             }
-        }
-    }
 
-    private void addExifData(File file) {
-        try {
-            ExifInterface exif = new ExifInterface(file.getAbsolutePath());
-
-            // Agregar fecha y hora
-            String dateTime = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss",
-                    Locale.getDefault()).format(new Date());
+            // Modificar metadatos usando ExifInterface(File)
+            ExifInterface exif = new ExifInterface(tempFile);
+            String dateTime = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.getDefault()).format(new Date());
             exif.setAttribute(ExifInterface.TAG_DATETIME, dateTime);
-            exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, dateTime);
-            exif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, dateTime);
-
-            // Agregar GPS si está disponible
             if (currentLocation != null) {
-                double latitude = currentLocation.getLatitude();
-                double longitude = currentLocation.getLongitude();
-                double altitude = currentLocation.getAltitude();
-
-                exif.setLatLong(latitude, longitude);
-                exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE,
-                        String.valueOf(altitude));
-
-                exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP,
-                        new SimpleDateFormat("yyyy:MM:dd", Locale.getDefault()).format(new Date()));
-                exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP,
-                        new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date()));
-
-                Toast.makeText(this, "GPS agregado: " + String.format("%.4f, %.4f",
-                        latitude, longitude), Toast.LENGTH_LONG).show();
-            } else {
-                Toast.makeText(this, "GPS no disponible, foto guardada sin ubicación",
-                        Toast.LENGTH_SHORT).show();
+                exif.setLatLong(currentLocation.getLatitude(), currentLocation.getLongitude());
             }
-
             exif.saveAttributes();
 
-        } catch (IOException e) {
+            // Copiar de nuevo al Uri final
+            try (InputStream in = new java.io.FileInputStream(tempFile);
+                 OutputStream out = getContentResolver().openOutputStream(photoUri, "w")) {
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, bytesRead);
+                }
+            }
+
+            tempFile.delete(); // borrar temporal
+            Toast.makeText(this, "Metadatos agregados correctamente", Toast.LENGTH_SHORT).show();
+
+        } catch (Exception e) {
             e.printStackTrace();
-            Toast.makeText(this, "Error al agregar metadatos: " + e.getMessage(),
-                    Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Error al agregar metadatos: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
-    private void addPhotoToGallery(File file) {
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Images.Media.DISPLAY_NAME, file.getName());
-        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-        values.put(MediaStore.Images.Media.DATE_ADDED, System.currentTimeMillis() / 1000);
-        values.put(MediaStore.Images.Media.DATA, file.getAbsolutePath());
 
-        getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
 
-        // Notificar al sistema que hay un nuevo archivo
-        Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-        Uri contentUri = Uri.fromFile(file);
-        mediaScanIntent.setData(contentUri);
-        sendBroadcast(mediaScanIntent);
+
+    private void addPhotoToGallery(Uri photoUri) {
+        if (photoUri != null) {
+            Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+            mediaScanIntent.setData(photoUri);
+            sendBroadcast(mediaScanIntent);
+        }
     }
 
     @Override

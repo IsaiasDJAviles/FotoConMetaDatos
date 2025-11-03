@@ -1,9 +1,11 @@
 package com.example.fotoconmetadatos;
 
 import android.Manifest;
+import android.content.ContentUris;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
@@ -11,6 +13,8 @@ import android.util.Log;
 import android.widget.Button;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -20,6 +24,7 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,6 +35,13 @@ public class MainActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private PhotoAdapter photoAdapter;
     private List<PhotoItem> photoList;
+
+    // Nuevo launcher moderno para abrir la cámara (más seguro que startActivity)
+    private final ActivityResultLauncher<Intent> cameraLauncher =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                // Aquí puedes recargar la galería al volver de la cámara
+                loadPhotos();
+            });
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -49,19 +61,16 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            // Configurar RecyclerView
             recyclerView.setLayoutManager(new GridLayoutManager(this, 2));
             photoList = new ArrayList<>();
             photoAdapter = new PhotoAdapter(photoList);
             recyclerView.setAdapter(photoAdapter);
-            Log.d(TAG, "RecyclerView configurado");
 
-            // Botón para tomar foto
             btnTakePhoto.setOnClickListener(v -> {
                 Log.d(TAG, "Botón tomar foto presionado");
                 try {
                     Intent intent = new Intent(MainActivity.this, CameraActivity.class);
-                    startActivity(intent);
+                    cameraLauncher.launch(intent);
                 } catch (Exception e) {
                     Log.e(TAG, "Error al abrir CameraActivity", e);
                     Toast.makeText(MainActivity.this,
@@ -69,15 +78,12 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
 
-            // Verificar y solicitar permisos
             checkPermissions();
-            Log.d(TAG, "onCreate completado");
 
         } catch (Exception e) {
             Log.e(TAG, "Error FATAL en onCreate", e);
             Toast.makeText(this, "Error crítico: " + e.getMessage(),
                     Toast.LENGTH_LONG).show();
-            e.printStackTrace();
         }
     }
 
@@ -85,12 +91,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         Log.d(TAG, "onResume");
-        try {
-            if (hasPermissions()) {
-                loadPhotos();
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error en onResume", e);
+        if (hasPermissions()) {
+            loadPhotos();
         }
     }
 
@@ -110,12 +112,10 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (!permissionsNeeded.isEmpty()) {
-            Log.d(TAG, "Solicitando permisos");
             ActivityCompat.requestPermissions(this,
                     permissionsNeeded.toArray(new String[0]),
                     REQUEST_PERMISSIONS);
         } else {
-            Log.d(TAG, "Permisos ya concedidos");
             loadPhotos();
         }
     }
@@ -131,43 +131,46 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadPhotos() {
-        Log.d(TAG, "loadPhotos iniciado");
-        try {
-            photoList.clear();
+        Log.d(TAG, "Cargando fotos...");
 
-            String[] projection = {
-                    MediaStore.Images.Media._ID,
-                    MediaStore.Images.Media.DATA,
-                    MediaStore.Images.Media.DISPLAY_NAME,
-                    MediaStore.Images.Media.DATE_ADDED
-            };
+        photoList.clear();
 
-            String sortOrder = MediaStore.Images.Media.DATE_ADDED + " DESC";
+        String[] projection = {
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.DATE_ADDED
+        };
 
-            Cursor cursor = getContentResolver().query(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    projection,
-                    null,
-                    null,
-                    sortOrder);
+        String sortOrder = MediaStore.Images.Media.DATE_ADDED + " DESC";
 
-            if (cursor != null) {
-                Log.d(TAG, "Cursor tiene " + cursor.getCount() + " fotos");
-                int idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID);
-                int dataColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA);
-                int nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME);
+        try (Cursor cursor = getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                null,
+                null,
+                sortOrder)) {
 
-                while (cursor.moveToNext()) {
-                    long id = cursor.getLong(idColumn);
-                    String path = cursor.getString(dataColumn);
-                    String name = cursor.getString(nameColumn);
+            if (cursor == null) {
+                Log.w(TAG, "Cursor es null");
+                return;
+            }
 
-                    String dateTime = "";
-                    String location = "";
+            int idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID);
+            int nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME);
 
-                    try {
-                        ExifInterface exif = new ExifInterface(path);
+            while (cursor.moveToNext()) {
+                long id = cursor.getLong(idColumn);
+                String name = cursor.getString(nameColumn);
 
+                Uri imageUri = ContentUris.withAppendedId(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+
+                String dateTime = "";
+                String location = "";
+
+                try (InputStream inputStream = getContentResolver().openInputStream(imageUri)) {
+                    if (inputStream != null) {
+                        ExifInterface exif = new ExifInterface(inputStream);
                         dateTime = exif.getAttribute(ExifInterface.TAG_DATETIME);
                         if (dateTime == null) dateTime = "";
 
@@ -175,17 +178,12 @@ public class MainActivity extends AppCompatActivity {
                         if (latLong != null) {
                             location = String.format("%.4f, %.4f", latLong[0], latLong[1]);
                         }
-
-                    } catch (IOException e) {
-                        Log.e(TAG, "Error leyendo EXIF de " + name);
                     }
-
-                    photoList.add(new PhotoItem(id, path, name, dateTime, location));
+                } catch (IOException e) {
+                    Log.e(TAG, "Error leyendo EXIF de " + name, e);
                 }
 
-                cursor.close();
-            } else {
-                Log.w(TAG, "Cursor es null");
+                photoList.add(new PhotoItem(id, imageUri.toString(), name, dateTime, location));
             }
 
             photoAdapter.updateData(photoList);
@@ -197,9 +195,8 @@ public class MainActivity extends AppCompatActivity {
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "Error FATAL al cargar fotos", e);
+            Log.e(TAG, "Error al cargar fotos", e);
             Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            e.printStackTrace();
         }
     }
 
@@ -218,10 +215,8 @@ public class MainActivity extends AppCompatActivity {
             }
 
             if (allGranted) {
-                Log.d(TAG, "Permisos concedidos");
                 loadPhotos();
             } else {
-                Log.w(TAG, "Permisos denegados");
                 Toast.makeText(this, "Permisos necesarios no concedidos",
                         Toast.LENGTH_LONG).show();
             }
